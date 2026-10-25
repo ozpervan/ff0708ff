@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dünya Radyoları</title>
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.8/dist/hls.min.js"></script>
+<style>
+:root{--bg:#10141a;--card:#181e27;--line:#262e3b;--tx:#e8edf4;--mut:#8b97a8;--ac:#4aa3ff;--ok:#3ecf6e;--bad:#ef5350;--fix:#f5b942}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.4 system-ui,Segoe UI,sans-serif;padding-bottom:90px}
+header{position:sticky;top:0;z-index:5;background:var(--card);border-bottom:1px solid var(--line);padding:10px 14px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+h1{font-size:17px;margin:0 8px 0 0}
+select,input[type=search],button{background:#0e131a;color:var(--tx);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font:inherit}
+button{cursor:pointer}button:hover{border-color:var(--ac)}
+button.pri{background:var(--ac);color:#04121f;border-color:var(--ac);font-weight:600}
+.tabs button.on{background:var(--ac);color:#04121f;border-color:var(--ac)}
+#tags{padding:10px 14px;display:flex;gap:6px;flex-wrap:wrap}
+.chip{padding:4px 10px;border-radius:99px;border:1px solid var(--line);background:var(--card);cursor:pointer;font-size:12.5px}
+.chip.on{background:var(--ac);color:#04121f;border-color:var(--ac)}
+#info{padding:0 14px 6px;color:var(--mut);font-size:13px}
+#bar{height:4px;background:var(--line);margin:0 14px 8px;border-radius:4px;overflow:hidden;display:none}
+#bar i{display:block;height:100%;width:0;background:var(--ac)}
+.row{display:flex;align-items:center;gap:10px;padding:8px 14px;border-bottom:1px solid var(--line)}
+.row:hover{background:#141a23}.row.cur{background:#16263a}
+.rk{width:28px;color:var(--mut);text-align:right}
+.dot{width:10px;height:10px;border-radius:50%;background:#556;flex:none}
+.dot.ok{background:var(--ok)}.dot.dead{background:var(--bad)}.dot.fixed{background:var(--fix)}.dot.checking{background:var(--ac);animation:p 1s infinite}
+@keyframes p{50%{opacity:.25}}
+.nm{flex:1;min-width:0}.nm b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nm small{color:var(--mut)}
+.meta{color:var(--mut);font-size:12px;width:120px;text-align:right}
+.row button{padding:5px 9px}
+.fav.on{color:#ff6b8b;border-color:#ff6b8b}
+#player{position:fixed;left:0;right:0;bottom:0;background:var(--card);border-top:1px solid var(--line);padding:10px 14px;display:flex;gap:12px;align-items:center}
+#now{flex:1;min-width:0}#now b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#now small{color:var(--mut)}
+@media(max-width:700px){.meta{display:none}}
+</style>
+</head>
+<body>
+<header>
+  <h1>📻 Dünya Radyoları</h1>
+  <select id="country" title="Ülke"></select>
+  <input id="q" type="search" placeholder="Radyo ara…">
+  <span class="tabs">
+    <button data-m="top" class="on">⭐ En çok dinlenen</button>
+    <button data-m="all">Tümü</button>
+    <button data-m="fav">♥ Favoriler</button>
+  </span>
+  <button id="chk" class="pri">Kontrol et ve onar</button>
+  <label style="color:var(--mut)"><input type="checkbox" id="hide" checked> Çalışmayanları gizle</label>
+  <button id="exp">M3U indir</button>
+</header>
+<div id="tags"></div>
+<div id="info"></div>
+<div id="bar"><i></i></div>
+<div id="list"></div>
+<div id="player">
+  <button id="pp" style="width:44px;height:44px;font-size:18px">▶</button>
+  <div id="now"><b>Bir radyo seçin</b><small>—</small></div>
+  <input id="vol" type="range" min="0" max="1" step="0.01" value="0.8">
+</div>
+<audio id="audio"></audio>
+
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const LS={get(k,d){try{return JSON.parse(localStorage.getItem(k))??d}catch{return d}},set(k,v){try{localStorage.setItem(k,JSON.stringify(v))}catch{}}};
+
+let over=LS.get('rb_over',{});      // onarılmış bağlantılar {uuid:url}
+let status=LS.get('rb_status',{});  // {uuid:'ok'|'dead'|'fixed'}
+let favs=LS.get('rb_favs',[]);      // istasyon nesneleri
+let cc=LS.get('rb_cc','TR'), mode='top', tag='', all=[], stop=false, running=false;
+const save=()=>{LS.set('rb_over',over);LS.set('rb_status',status);LS.set('rb_favs',favs);LS.set('rb_cc',cc)};
+
+/* ---------- API (Radio Browser, topluluk veritabanı) ---------- */
+let servers=['https://de1.api.radio-browser.info','https://de2.api.radio-browser.info','https://fi1.api.radio-browser.info'], base=null;
+async function discover(){
+  try{const r=await fetch('https://all.api.radio-browser.info/json/servers',{signal:AbortSignal.timeout(6000)});
+    const l=(await r.json()).map(x=>'https://'+x.name);if(l.length)servers=l.sort(()=>Math.random()-.5)}catch{}
+}
+async function api(path){
+  const order=base?[base,...servers.filter(s=>s!==base)]:servers;
+  for(const s of order){
+    try{const r=await fetch(s+path,{signal:AbortSignal.timeout(20000)});if(!r.ok)throw 0;base=s;return await r.json()}catch{}
+  }
+  throw new Error('API erişilemiyor');
+}
+
+/* ---------- Bağlantı test / onarım ---------- */
+const isPl=u=>/\.(pls|m3u)(\?|$)/i.test(u), isHls=u=>/\.m3u8(\?|$)/i.test(u);
+async function resolvePlaylist(u){
+  try{const t=await (await fetch(u,{signal:AbortSignal.timeout(6000)})).text();const m=t.match(/https?:\/\/[^\s"'<>]+/);return m?m[0]:null}catch{return null}
+}
+function testUrl(url,ms=8000){return new Promise(res=>{
+  const a=new Audio();let h=null,done=false;
+  const fin=ok=>{if(done)return;done=true;clearTimeout(t);try{h&&h.destroy()}catch{}a.onerror=null;a.removeAttribute('src');a.load();res(ok)};
+  const t=setTimeout(()=>fin(false),ms);
+  a.preload='metadata';a.muted=true;
+  ['loadedmetadata','canplay','loadeddata'].forEach(e=>a.addEventListener(e,()=>fin(true)));
+  a.addEventListener('error',()=>fin(false));
+  if(isHls(url)&&window.Hls&&Hls.isSupported()&&!a.canPlayType('application/vnd.apple.mpegurl')){
+    h=new Hls();h.on(Hls.Events.MANIFEST_PARSED,()=>fin(true));h.on(Hls.Events.ERROR,(e,d)=>d.fatal&&fin(false));h.loadSource(url);h.attachMedia(a);
+  }else{a.src=url;a.load()}
+})}
+async function probe(u){            // çalışıyorsa doğrudan akış adresini döndürür
+  if(!u)return null;
+  if(isPl(u)){const r=await resolvePlaylist(u);if(!r)return null;u=r}
+  return (await testUrl(u))?u:null;
+}
+const swap=u=>u.startsWith('https://')?'http://'+u.slice(8):u.startsWith('http://')?'https://'+u.slice(7):u;
+const stationUrl=s=>over[s.stationuuid]||s.url_resolved||s.url;
+async function repair(s,skip){
+  const c=new Set();
+  [stationUrl(s),s.url_resolved,s.url].forEach(u=>u&&c.add(u));
+  [...c].forEach(u=>c.add(swap(u)));
+  try{const r=await api('/json/url/'+s.stationuuid);if(r&&r.url)c.add(r.url)}catch{}
+  if(skip)c.delete(skip);
+  for(const u of c){const w=await probe(u);if(w)return w}
+  try{ // aynı isimli alternatif kayıtlar
+    const alt=await api(`/json/stations/search?name=${encodeURIComponent(s.name)}&nameExact=true&hidebroken=true&limit=8`+(s.countrycode?`&countrycode=${s.countrycode}`:''));
+    for(const a of alt){if(a.stationuuid===s.stationuuid)continue;
+      for(const u of [a.url_resolved,a.url]){if(!u||c.has(u))continue;const w=await probe(u);if(w)return w}}
+  }catch{}
+  return null;
+}
+function setStatus(s,v){
+  status[s.stationuuid]=v;
+  const d=document.querySelector(`[data-id="${s.stationuuid}"] .dot`);if(d)d.className='dot '+v;
+}
+
+/* ---------- Oynatma ---------- */
+const audio=$('#audio');let cur=null,tok=0,hls=null,timer=null,playing=false;
+audio.volume=.8;
+function now(s,msg){$('#now').innerHTML=`<b>${esc(s?s.name:'Bir radyo seçin')}</b><small>${esc(msg||'')}</small>`}
+async function play(s,healed=false){
+  const my=++tok;cur=s;playing=false;now(s,'Bağlanıyor…');markCur();
+  let u=stationUrl(s);if(isPl(u))u=(await resolvePlaylist(u))||u;
+  if(my!==tok)return;
+  if(hls){hls.destroy();hls=null}
+  const fail=async()=>{
+    if(my!==tok||playing)return;clearTimeout(timer);
+    if(healed){now(s,'Çalışmıyor');setStatus(s,'dead');save();return}
+    now(s,'Bağlantı kopuk, onarılıyor…');
+    const n=await repair(s,u);if(my!==tok)return;
+    if(n){over[s.stationuuid]=n;setStatus(s,'fixed');save();play(s,true)}
+    else{now(s,'Çalışan bağlantı bulunamadı');setStatus(s,'dead');save()}
+  };
+  audio.onerror=fail;
+  audio.onplaying=()=>{if(my!==tok)return;playing=true;clearTimeout(timer);now(s,[s.codec,s.bitrate?s.bitrate+' kbps':'',s.countrycode].filter(Boolean).join(' · '));
+    setStatus(s,healed?'fixed':(status[s.stationuuid]==='fixed'?'fixed':'ok'));save();$('#pp').textContent='⏸';
+    api('/json/url/'+s.stationuuid).catch(()=>{})};   // dinlenme sayısına katkı
+  clearTimeout(timer);timer=setTimeout(fail,12000);
+  if(isHls(u)&&window.Hls&&Hls.isSupported()&&!audio.canPlayType('application/vnd.apple.mpegurl')){
+    hls=new Hls();hls.on(Hls.Events.ERROR,(e,d)=>d.fatal&&fail());hls.loadSource(u);hls.attachMedia(audio);
+  }else audio.src=u;
+  audio.play().catch(()=>{});
+}
+$('#pp').onclick=()=>{if(!cur)return;if(audio.paused){audio.play();$('#pp').textContent='⏸'}else{audio.pause();$('#pp').textContent='▶'}};
+$('#vol').oninput=e=>audio.volume=e.target.value;
+audio.onpause=()=>$('#pp').textContent='▶';
+function markCur(){document.querySelectorAll('.row').forEach(r=>r.classList.toggle('cur',cur&&r.dataset.id===cur.stationuuid))}
+
+/* ---------- Liste ---------- */
+function view(){
+  let l=mode==='fav'?[...favs]:[...all];
+  if(mode!=='fav'&&tag)l=l.filter(s=>(s.tags||'').toLowerCase().split(',').map(x=>x.trim()).includes(tag));
+  const q=$('#q').value.trim().toLowerCase();if(q)l=l.filter(s=>s.name.toLowerCase().includes(q));
+  if($('#hide').checked)l=l.filter(s=>status[s.stationuuid]!=='dead');
+  if(mode==='top')l=l.sort((a,b)=>b.clickcount-a.clickcount).slice(0,50);
+  else if(mode==='all')l=l.sort((a,b)=>a.name.localeCompare(b.name,'tr'));
+  return l.slice(0,500);
+}
+function render(){
+  const l=view();
+  $('#info').textContent=`${l.length} radyo gösteriliyor`+(all.length?` · bu ülkede toplam ${all.length} kayıt`:'');
+  $('#list').innerHTML=l.map((s,i)=>`<div class="row" data-id="${s.stationuuid}">
+    <span class="rk">${i+1}</span><span class="dot ${status[s.stationuuid]||''}"></span>
+    <div class="nm"><b>${esc(s.name)}</b><small>${esc((s.tags||'').split(',').slice(0,4).join(', '))}</small></div>
+    <span class="meta">${s.clickcount?'👂 '+s.clickcount:''} ${s.bitrate?'· '+s.bitrate+'k':''}</span>
+    <button class="fav ${favs.some(f=>f.stationuuid===s.stationuuid)?'on':''}" data-a="fav">♥</button>
+    <button data-a="play">▶</button></div>`).join('')||'<div style="padding:30px;color:var(--mut)">Sonuç yok.</div>';
+  markCur();
+}
+$('#list').onclick=e=>{
+  const b=e.target.closest('button'),r=e.target.closest('.row');if(!r)return;
+  const id=r.dataset.id,s=[...all,...favs].find(x=>x.stationuuid===id);if(!s)return;
+  if(b&&b.dataset.a==='fav'){const i=favs.findIndex(f=>f.stationuuid===id);i>=0?favs.splice(i,1):favs.push(s);save();b.classList.toggle('on');if(mode==='fav')render()}
+  else play(s);
+};
+function renderTags(tags){
+  $('#tags').innerHTML=`<span class="chip ${tag?'':'on'}" data-t="">Tümü</span>`+tags.map(t=>`<span class="chip ${t===tag?'on':''}" data-t="${esc(t)}">${esc(t)}</span>`).join('');
+}
+let curTags=[];
+$('#tags').onclick=async e=>{
+  const c=e.target.closest('.chip');if(!c)return;tag=c.dataset.t;
+  if(!cc&&tag)await loadWorld(tag);else if(!cc&&!tag)await loadWorld('');
+  renderTags(curTags);render();
+};
+function deriveTags(l){
+  const m={};l.forEach(s=>(s.tags||'').split(',').forEach(t=>{t=t.trim().toLowerCase();if(t.length>1&&t.length<26)m[t]=(m[t]||0)+1}));
+  return Object.entries(m).sort((a,b)=>b[1]-a[1]).slice(0,45).map(x=>x[0]);
+}
+async function loadWorld(t){
+  $('#info').textContent='Yükleniyor…';
+  all=await api(`/json/stations/search?hidebroken=true&order=clickcount&reverse=true&limit=300`+(t?`&tag=${encodeURIComponent(t)}`:''));
+  if(!curTags.length)curTags=(await api('/json/tags?order=stationcount&reverse=true&hidebroken=true&limit=45')).map(x=>x.name);
+}
+async function loadCountry(){
+  tag='';curTags=[];$('#info').textContent='Yükleniyor…';$('#list').innerHTML='';
+  try{
+    if(cc){all=await api(`/json/stations/search?countrycode=${cc}&hidebroken=true&order=clickcount&reverse=true&limit=2000`);curTags=deriveTags(all)}
+    else await loadWorld('');
+    renderTags(curTags);render();
+  }catch(e){$('#info').textContent='Hata: '+e.message+' — internet bağlantısını kontrol edin.'}
+}
+
+/* ---------- Toplu kontrol ve onarım ---------- */
+$('#chk').onclick=async()=>{
+  if(running){stop=true;return}
+  const list=view();if(!list.length)return;
+  running=true;stop=false;$('#chk').textContent='Durdur';$('#bar').style.display='block';
+  let i=0,done=0,fixed=0,dead=0;
+  const worker=async()=>{while(!stop){
+    const s=list[i++];if(!s)break;
+    setStatus(s,'checking');
+    if(await probe(stationUrl(s)))setStatus(s,over[s.stationuuid]?'fixed':'ok');
+    else{const n=await repair(s,stationUrl(s));
+      if(n){over[s.stationuuid]=n;setStatus(s,'fixed');fixed++}else{setStatus(s,'dead');dead++}}
+    done++;$('#bar i').style.width=(done/list.length*100)+'%';
+    $('#info').textContent=`Kontrol: ${done}/${list.length} · onarılan ${fixed} · çalışmayan ${dead}`;
+    if(done%10===0)save();
+  }};
+  await Promise.all(Array.from({length:5},worker));
+  running=false;$('#chk').textContent='Kontrol et ve onar';$('#bar').style.display='none';save();
+  $('#info').textContent+=' · bitti';
+  if($('#hide').checked&&dead)setTimeout(render,1500);
+};
+
+/* ---------- Diğer ---------- */
+document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{
+  mode=b.dataset.m;document.querySelectorAll('.tabs button').forEach(x=>x.classList.toggle('on',x===b));render();
+});
+$('#q').oninput=render;$('#hide').onchange=render;
+$('#country').onchange=e=>{cc=e.target.value;save();loadCountry()};
+$('#exp').onclick=()=>{
+  const l=view().filter(s=>status[s.stationuuid]!=='dead');
+  const t='#EXTM3U\n'+l.map(s=>`#EXTINF:-1,${s.name.replace(/[\r\n]/g,' ')}\n${stationUrl(s)}`).join('\n');
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([t],{type:'audio/x-mpegurl'}));
+  a.download=`radyolar-${cc||'dunya'}.m3u`;a.click();
+};
+(async function init(){
+  await discover();
+  try{
+    const dn=new Intl.DisplayNames(['tr'],{type:'region'});
+    const flag=c=>String.fromCodePoint(...[...c.toUpperCase()].map(x=>127397+x.charCodeAt(0)));
+    const cs=(await api('/json/countries?hidebroken=true')).filter(c=>c.iso_3166_1&&c.stationcount>0)
+      .map(c=>({c:c.iso_3166_1,n:(()=>{try{return dn.of(c.iso_3166_1)}catch{return c.name}})(),k:c.stationcount}))
+      .sort((a,b)=>a.n.localeCompare(b.n,'tr'));
+    $('#country').innerHTML=`<option value="">🌍 Dünya (en çok dinlenenler)</option>`+cs.map(c=>`<option value="${c.c}">${flag(c.c)} ${esc(c.n)} (${c.k})</option>`).join('');
+    $('#country').value=cc;
+  }catch{$('#info').textContent='Ülke listesi alınamadı. İnternet bağlantısını kontrol edin.'}
+  loadCountry();
+})();
+</script>
+</body>
+</html>

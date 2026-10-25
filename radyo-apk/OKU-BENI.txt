@@ -1,0 +1,14 @@
+APK ÜRETME ADIMLARI (bilgisayardan, ~10 dakika, ücretsiz)
+
+1) github.com'da hesap açın -> sağ üstte "+" -> "New repository" -> ad: dunya-radyolari -> Create.
+2) Açılan sayfada "uploading an existing file" bağlantısına tıklayın.
+3) Bu klasörün İÇİNDEKİ her şeyi sürükleyip bırakın:
+   www klasörü, package.json, capacitor.config.json, .gitignore ve ".github" klasörü.
+   (".github" gizli klasördür; görünmüyorsa Mac'te Cmd+Shift+. , Windows'ta Görünüm > Gizli öğeler.)
+   "Commit changes" deyin.
+4) Üstteki "Actions" sekmesine girin. "APK derle" çalışmaya başlar (yoksa soldan seçip "Run workflow").
+5) Yeşil tik çıkınca (3-6 dk) çalıştırmaya tıklayın, en altta "Artifacts" altındaki
+   "dunya-radyolari-apk" dosyasını indirin, zip'ten çıkan app-debug.apk'yı telefona aktarın.
+6) Telefonda APK'ya dokunun, "bilinmeyen kaynaklardan yüklemeye izin ver" deyip kurun.
+
+Programı değiştirmek isterseniz www/index.html dosyasını GitHub'da düzenleyin; APK yeniden derlenir.

@@ -1,0 +1,7 @@
+{
+  "appId": "tr.radyo.dunya",
+  "appName": "Dünya Radyoları",
+  "webDir": "www",
+  "server": { "androidScheme": "http", "cleartext": true },
+  "android": { "allowMixedContent": true }
+}
